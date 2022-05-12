@@ -36,11 +36,11 @@ class Sound(object):
       # Generate Gaussian noise signal in Fourier space
       fRandomGauss = lambda var: np.random.normal(0., scale=np.sqrt(var)+1.e-10) * np.exp(1j*np.random.uniform(0., 2.*np.pi))
       fFourier = lambda nu: fRandomGauss(fPowerSpectrum(nu))
-      fourier = np.array(map(fFourier, Nu))
+      fourier = np.array(list(map(fFourier, Nu)))
       # guarantee that the Fourier signal at nu=0 is hermitian, e.g. zero
       fourier[0] = 0.
       
-#      var = np.array(map(fPowerSpectrum, Nu))
+#      var = np.array(list(map(fPowerSpectrum, Nu)))
 #      plt.semilogx(Nu, np.real(fourier), 'r.', alpha=0.5)
 #      plt.semilogx(Nu, np.imag(fourier), 'b.', alpha=0.5)
 #      plt.semilogx(Nu, np.sqrt(var), 'k')

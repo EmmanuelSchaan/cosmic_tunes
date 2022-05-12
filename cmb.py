@@ -11,315 +11,203 @@ class CMB(object):
    def __str__(self):
       return self.name
    
-   def __init__(self):
-      # required input:
-      # self.name (string)
-      # self.nu1 frequency 1 in Hertz
-      # self.nu2 frequency 2 in Hertz
-      # self.fwhm beam fwhm in rad
-      # self.sensitivity sensitivity in muK.rad
+   def __init__(self, beam=1., noise=1., nu1=143.e9, nu2=143.e9, lMin=30., lMaxT=3.e3, lMaxP=5.e3, fg=True, atm=False, name=None):
+   
+      # name
+      self.name = "cmb_beam"+str(round(beam, 3))+"_noise"+str(round(noise, 3))+ "_nu"+str(np.int(nu1/1.e9))+"_nu"+str(np.int(nu2/1.e9))+"_lmin"+str(np.int(lMin))+"_lmaxT"+str(int(lMaxT))+"_lmaxP"+str(int(lMaxP))
+      if atm:
+         self.name += "_atmnoise"
+      if name is not None:
+         self.name += "_"+name
+      # frequencies in Hz
+      self.nu1 = nu1
+      self.nu2 = nu2
+      # beam fwhm in radians (1 arcmin)
+      self.fwhm = beam * (np.pi/180.)/60.
+      # detector sensitivity in muK*rad.
+      self.sensitivity = noise * (np.pi/180.)/60.
+      # ell limits
+      self.lMin = lMin
+      self.lMaxT = lMaxT
+      self.lMaxP = lMaxP
       
-      # constants
+      ##################################################################################
+      
+      # Physical constants
       self.c = 3.e8  # m/s
       self.h = 6.63e-34 # SI
       self.kB = 1.38e-23   # SI
       self.Tcmb = 2.726 # K
+#!!! manuwarning
       self.Jansky = 1.e-26 # W/m^2/Hz
+      self.Jy = 1.e-26  # [W/m^2/Hz]
       
-      # convert from Dl to pixel noise Cl
-      #self.fdl_to_cl = lambda l: self.fbeam(l)**2 / ( l*(l+1.)/(2.*np.pi) )
-      self.fdl_to_cl = lambda l: 1./( l*(l+1.)/(2.*np.pi) )
+      # Ref frequency in the Dunkley+13 foreground model
+      self.nu0 = 150.e9
       
-      ###########################################
+      # convert from Dl to Cl: Dl = l(l+1) Cl / 2pi
+      self.fdl_to_cl = lambda l: divide(2.*np.pi, l*(l+1.))
+   
+      ##################################################################################
+      ##################################################################################
+      # interpolate the frequency dependencies, for speed
+      
+      self.pathFreqDpdces = "./input/cmb/freq_dpdces.txt"
+      if True:#not os.path.exists(self.pathFreqDpdces):
+         self.saveFreqDpdce()
+      self.loadFreqDpdce()
+
+
+      ##################################################################################
+      ##################################################################################
       # unlensed primary T, E, B
 
-      # unlensed CMB
+      # read the Dl, and convert to Cl
       data = np.genfromtxt("./input/universe_Planck15/camb/lenspotentialCls.dat")
-      self.funlensedTT_template = UnivariateSpline(data[:,0], data[:,1],k=1,s=0)
-      lmin_unlensedCMB = data[0,0]
-      lmax_unlensedCMB = data[-1,0]
-      self.funlensedTT = lambda l: (l>=lmin_unlensedCMB and l<=lmax_unlensedCMB) * self.funlensedTT_template(l) * self.fdl_to_cl(l)
+      factor = self.fdl_to_cl(data[:,0])
+      data[:,1] *= factor
+      data[:,2] *= factor
+      data[:,3] *= factor
+      data[:,4] *= factor
+
+      # interpolate
+      self.funlensedTT = interp1d(data[:,0], data[:,1], kind='linear', bounds_error=False, fill_value=0.)
+      self.funlensedEE = interp1d(data[:,0], data[:,2], kind='linear', bounds_error=False, fill_value=0.)
+      self.funlensedBB = interp1d(data[:,0], data[:,3], kind='linear', bounds_error=False, fill_value=0.)
+      self.funlensedTE = interp1d(data[:,0], data[:,4], kind='linear', bounds_error=False, fill_value=0.)
+
       
-      # unlensed EE
-      data = np.genfromtxt("./input/universe_Planck15/camb/lenspotentialCls.dat")
-      self.funlensedEE_template = UnivariateSpline(data[:,0], data[:,2],k=1,s=0)
-      lmin_unlensedEE = data[0,0]
-      lmax_unlensedEE = data[-1,0]
-      self.funlensedEE = lambda l: (l>=lmin_unlensedEE and l<=lmax_unlensedEE) * self.funlensedEE_template(l) * self.fdl_to_cl(l)
-      
-      # unlensed BB
-      data = np.genfromtxt("./input/universe_Planck15/camb/lenspotentialCls.dat")
-      self.funlensedBB_template = UnivariateSpline(data[:,0], data[:,3],k=1,s=0)
-      lmin_unlensedBB = data[0,0]
-      lmax_unlensedBB = data[-1,0]
-      self.funlensedBB = lambda l: (l>=lmin_unlensedBB and l<=lmax_unlensedBB) * self.funlensedBB_template(l) * self.fdl_to_cl(l)
-      
-      # unlensed TE
-      data = np.genfromtxt("./input/universe_Planck15/camb/lenspotentialCls.dat")
-      self.funlensedTE_template = UnivariateSpline(data[:,0], data[:,4],k=1,s=0)
-      lmin_unlensedTE = data[0,0]
-      lmax_unlensedTE = data[-1,0]
-      self.funlensedTE = lambda l: (l>=lmin_unlensedTE and l<=lmax_unlensedTE) * self.funlensedTE_template(l) * self.fdl_to_cl(l)
-      
-      
-      ###########################################
+      ##################################################################################
       # lensed primary T, E, B
+
+      # read the Dl, and convert to Cl
+      data = np.genfromtxt("./input/universe_Planck15/camb/lensedCls.dat")
+      factor = self.fdl_to_cl(data[:,0])
+      data[:,1] *= factor
+      data[:,2] *= factor
+      data[:,3] *= factor
+      data[:,4] *= factor
+
+      # interpolate
+      self.flensedTT = interp1d(data[:,0], data[:,1], kind='linear', bounds_error=False, fill_value=0.)
+      self.flensedEE = interp1d(data[:,0], data[:,2], kind='linear', bounds_error=False, fill_value=0.)
+      self.flensedBB = interp1d(data[:,0], data[:,3], kind='linear', bounds_error=False, fill_value=0.)
+      self.flensedTE = interp1d(data[:,0], data[:,4], kind='linear', bounds_error=False, fill_value=0.)
+
+      ##################################################################################
+      # total primary T, E, B: lensed + noise + atm + fg
+
+      # TT
+      if fg and not atm:
+         self.ftotalTT = lambda l: self.flensedTT(l) + self.fkSZ(l) + self.fCIB(l) + self.ftSZ(l) + self.ftSZ_CIB(l) + self.fradioPoisson(l) + self.fdetectorNoise(l)
+      elif fg and atm:
+         self.ftotalTT = lambda l: self.flensedTT(l) + self.fkSZ(l) + self.fCIB(l) + self.ftSZ(l) + self.ftSZ_CIB(l) + self.fradioPoisson(l) + self.fdetectorNoise(l) + self.fatmosphericNoiseTT(l)
+      elif not fg and not atm:
+         self.ftotalTT = lambda l: self.flensedTT(l) + self.fdetectorNoise(l)
+      elif not fg and atm:
+         self.ftotalTT = lambda l: self.flensedTT(l)+ self.fdetectorNoise(l) + self.fatmosphericNoiseTT(l)
       
-      # lensed CMB
-      data = np.genfromtxt("./input/universe_Planck15/camb/lensedCls.dat")
-      self.flensedTT_template = UnivariateSpline(data[:,0], data[:,1],k=1,s=0)
-      lmin_lensedCMB = data[0,0]
-      lmax_lensedCMB = data[-1,0]
-      self.flensedTT = lambda l: (l>=lmin_lensedCMB and l<=lmax_lensedCMB) * self.flensedTT_template(l) * self.fdl_to_cl(l)
+      # TE, EE, BB
+      if atm:
+         self.ftotalEE = lambda l: self.flensedEE(l) + 2.*self.fdetectorNoise(l) + self.fatmosphericNoisePP(l)
+         self.ftotalBB = lambda l: self.flensedBB(l) + 2.*self.fdetectorNoise(l) + self.fatmosphericNoisePP(l)
+         self.ftotalTE = lambda l: self.flensedTE(l)
+      else:
+         self.ftotalEE = lambda l: self.flensedEE(l) + 2.*self.fdetectorNoise(l)
+         self.ftotalBB = lambda l: self.flensedBB(l) + 2.*self.fdetectorNoise(l)
+         self.ftotalTE = lambda l: self.flensedTE(l)
+      
 
-      # lensed EE
-      data = np.genfromtxt("./input/universe_Planck15/camb/lensedCls.dat")
-      self.flensedEE_template = UnivariateSpline(data[:,0], data[:,2],k=1,s=0)
-      lmin_lensedEE = data[0,0]
-      lmax_lensedEE = data[-1,0]
-      self.flensedEE = lambda l: (l>=lmin_lensedEE and l<=lmax_lensedEE) * self.flensedEE_template(l) * self.fdl_to_cl(l)
-
-      # lensed BB
-      data = np.genfromtxt("./input/universe_Planck15/camb/lensedCls.dat")
-      self.flensedBB_template = UnivariateSpline(data[:,0], data[:,3],k=1,s=0)
-      lmin_lensedBB = data[0,0]
-      lmax_lensedBB = data[-1,0]
-      self.flensedBB = lambda l: (l>=lmin_lensedBB and l<=lmax_lensedBB) * self.flensedBB_template(l) * self.fdl_to_cl(l)
-
-      # lensed TE
-      data = np.genfromtxt("./input/universe_Planck15/camb/lensedCls.dat")
-      self.flensedTE_template = UnivariateSpline(data[:,0], data[:,4],k=1,s=0)
-      lmin_lensedTE = data[0,0]
-      lmax_lensedTE = data[-1,0]
-      self.flensedTE = lambda l: (l>=lmin_lensedTE and l<=lmax_lensedTE) * self.flensedTE_template(l) * self.fdl_to_cl(l)
-
-      ###########################################
-      # total primary T, E, B, w/o foregrounds: lensed + noise
-
-      self.ftotalTT = lambda l: self.flensedTT(l) + self.fdetectorNoise(l) #+ self.fatmosphericNoiseTT(l)
-      self.ftotalEE = lambda l: self.flensedEE(l) + 2.*self.fdetectorNoise(l) #+ self.fatmosphericNoisePP(l)
-      self.ftotalBB = lambda l: self.flensedBB(l) + 2.*self.fdetectorNoise(l) #+ self.fatmosphericNoisePP(l)
-      #
-      self.ftotalTE = lambda l: self.flensedTE(l)
-
-      ###########################################
-
-      # tSZ: Dunkley et al 2013
-      data = np.genfromtxt("./input/cmb/digitizing_SZ_template/tSZ.txt")
-      ftSZ_template = UnivariateSpline(data[:,0], data[:,1],k=1,s=0)
-      a_tSZ = 4.0
-      lmin_tSZ = data[0,0]
-      lmax_tSZ = data[-1,0]
-      self.ftSZ = lambda l: (l>=lmin_tSZ and l<=lmax_tSZ) * a_tSZ * self.freqDpdceTSZTemp(self.nu1)*self.freqDpdceTSZTemp(self.nu2)/self.freqDpdceTSZTemp(150.e9)**2 * ftSZ_template(l) * self.fdl_to_cl(l)
+      ###############################################################################
+      ###############################################################################
+      # Foreground power spectra
 
       # kSZ: Dunkley et al 2013
-      data = np.genfromtxt("./input/cmb/digitizing_SZ_template/kSZ.txt")
-      fkSZ_template = UnivariateSpline(data[:,0], data[:,1],k=1,s=0)
+      data = np.genfromtxt("./input/cmb/digitizing_SZ_template/kSZ.txt")   # read l, Dl
+      data[:,1] *= self.fdl_to_cl(data[:,0]) # convert Dl to Cl
+      fkSZ_template = interp1d(data[:,0], data[:,1], kind='linear', bounds_error=False, fill_value=0.)
       a_kSZ = 1.5  # 1.5 predicted by Battaglia et al 2010. Upper limit from Dunkley+13 is 5.
-      lmin_kSZ = data[0,0]
-      lmax_kSZ = data[-1,0]
-      self.fkSZ = lambda l: (l>=lmin_kSZ and l<=lmax_kSZ) * a_kSZ * fkSZ_template(l) * self.fdl_to_cl(l)
-   
-      # tSZ x CMB: Dunkley et al 2013
+      self.fkSZ = lambda l: a_kSZ * fkSZ_template(l)
+      
+
+      # tSZ: Dunkley et al 2013
+      data = np.genfromtxt("./input/cmb/digitizing_SZ_template/tSZ.txt")   # read l, Dl
+      data[:,1] *= self.fdl_to_cl(data[:,0]) # convert Dl to Cl
+      ftSZ_template = interp1d(data[:,0], data[:,1], kind='linear', bounds_error=False, fill_value=0.)
+      a_tSZ = 4.0
+      self.ftSZ = lambda l: a_tSZ * ftSZ_template(l) * self.tszFreqDpdceT(self.nu1) * self.tszFreqDpdceT(self.nu2) / self.tszFreqDpdceT(self.nu0)**2
+
+
+      # tSZ x CIB: Dunkley et al 2013
       xi = 0.2 # upper limit at 95% confidence
       a_tSZ = 4.0
       a_CIBC = 5.7
       betaC = 2.1
       Td = 9.7
       # watch for the minus sign
-      data = np.genfromtxt ("./input/cmb/digitizing_tSZCIB_template/minus_tSZ_CIB.txt")
-      ftSZCIB_template = UnivariateSpline(data[:,0], data[:,1],k=1,s=0)
-      lmin_tSZ_CIB = data[0,0]
-      lmax_tSZ_CIB = data[-1,0]
-      self.ftSZ_CIB = lambda l: (l>=lmin_tSZ_CIB and l<=lmax_tSZ_CIB) * (-2.)*xi*np.sqrt(a_tSZ*a_CIBC)* self.fprime(self.nu1, self.nu2, betaC, Td)/self.fprime(150.e9, 150.e9, betaC, Td) * ftSZCIB_template(l) * self.fdl_to_cl(l)
-
+      data = np.genfromtxt ("./input/cmb/digitizing_tSZCIB_template/minus_tSZ_CIB.txt")   # read l, Dl
+      data[:,1] *= self.fdl_to_cl(data[:,0]) # convert Dl to Cl
+      ftSZCIB_template = interp1d(data[:,0], data[:,1], kind='linear', bounds_error=False, fill_value=0.)
+      
+      self.ftSZ_CIB = lambda l: -2. * xi * np.sqrt(a_tSZ * a_CIBC) * ftSZCIB_template(l) * (self.tszFreqDpdceT(self.nu1)*self.cibPoissonFreqDpdceT(self.nu2) + self.tszFreqDpdceT(self.nu2)*self.cibPoissonFreqDpdceT(self.nu1)) / (2.* self.tszFreqDpdceT(self.nu0)*self.cibPoissonFreqDpdceT(self.nu0))
+         
 
    ###############################################################################
-   # beam and detector noise
 
-   def fbeamTheta(self, theta):
-      sigma_beam = self.fwhm / np.sqrt(8.*np.log(2.))
-      return np.exp(-0.5*theta**2/sigma_beam**2) / (2.*np.pi*sigma_beam**2)
-      
-   def fbeam(self, l):
-      sigma_beam = self.fwhm / np.sqrt(8.*np.log(2.))
-      return np.exp(-0.5*l**2 * sigma_beam**2)
-   
-   def fdetectorNoise(self, l):
-      return self.sensitivity**2 / self.fbeam(l)**2
-
-
-   ###############################################################################
-   # functions for frequency dependence
-   
-   # blackbody function
-   # nu in Hz
-   # output in W / Hz / m^2 / sr
-   def blackbody(self, nu, T):
-      x = self.h*nu/(self.kB*T)
-      result = 2.*self.h*nu**3 /self.c**2
-      result /= np.exp(x) - 1.
-      return result
-   
-   # dlnBlackbody/dlnT
-   # output in SI
-   def dlnBdlnT(self, nu, T):
-      x = self.h*nu/(self.kB*T)
-      return x * np.exp(x) / (np.exp(x) - 1.)
-   
-   # d(blackbody)/dT at T
-   # output in SI
-   def dBdT(self, nu, T):
-      x = self.h*nu/(self.kB*T)
-      result = 2.*self.h**2*nu**4
-      result /= self.kB*T**2*self.c**2
-      result *= np.exp(x) / (np.exp(x) - 1.)**2
-      return result
-   
-   # dT/d(blackbody) at T
-   # output in SI
-   def g(self, nu, T):
-      return 1./self.dBdT(nu, T)
-   
-   # blackbody modified with power law
-   # expressed in temperature units
-   # relevant for CIB
-   def mu(self, nu, beta, T):
-      return nu**beta * self.blackbody(nu, T) * self.g(nu, self.Tcmb)
-
-   # frequency dependence for tSZ
-   # dT/T = freqDpdceTSZTemp * y
-   def freqDpdceTSZTemp(self, nu):
-      x = self.h*nu/(self.kB*self.Tcmb)
-      return x*(np.exp(x)+1.)/(np.exp(x)-1.) -4.
-   
-   # frequency dependence for tSZ
-   # dI/I = freqDpdceTSZIntensity * y
-   def freqDpdceTSZIntensity(self, nu):
-      return self.freqDpdceTSZTemp(nu) * self.dlnBdlnT(nu, self.Tcmb)
-   
-
-   def fprime(self, nu1, nu2, beta, T):
-      return self.freqDpdceTSZTemp(nu1) * self.mu(nu2, beta, T) + self.freqDpdceTSZTemp(nu2) * self.mu(nu1, beta, T)
-   
-   
-   def plotFreqDpdce(self):
-      #Nu = np.linspace(0., 800., 301)*1.e9   # in Hz
-      Nu = np.logspace(np.log10(0.1), np.log10(1.e4), 501, 10.)*1.e9   # in Hz
-      f = np.array(map(self.freqDpdceTSZTemp, Nu)) # freq dpdce of dT/T for tSZ
-      
-      MJy = 1.e-26 * 1.e6  # mega Jansky in SI
-
-      # CMB mean and fluctuations specific intensity, in SI
-      fluct = 110.e-6/2.726 # primary fluctuations, ~110muK
-      f = lambda nu: self.blackbody(nu, self.Tcmb)
-      blackbody = np.array(map(f, Nu))
-      CMBfluct = fluct * blackbody
-      # tSZ
-      y = 0.1e-6/2.726   # tSZ amplitude, ~0.1muK for 1.e13Msun halo
-      freqDpdceTSZIntensity = np.array(map(self.freqDpdceTSZIntensity, Nu))
-      TSZ = freqDpdceTSZIntensity * blackbody * y
-      # kSZ
-      tauvc = 0.1e-6/2.726  # kSZ amplitude, ~0.1muK for 1e13Msun halo
-      KSZ = blackbody * tauvc
-      # CIB: dust temperature and power law index
-      cibAmplitude = 1. # arbitrary number
-      Td = 9.7
-      betaP = 2.1
-      cibFreqDpdceTemperature = np.array(map(lambda nu: self.mu(nu, betaP, Td), Nu))
-      cibFreqDpdceTemperature /= self.mu(150.e9, betaP, Td)
-      f = lambda nu: self.dlnBdlnT(nu, self.Tcmb)
-      dlnBdlnT = np.array(map(f, Nu))
-      CIB = cibFreqDpdceTemperature * dlnBdlnT * blackbody
-      
-      
-      # Plot CMB vs tSZ
-      # in intensity, in MJy
-      fig=plt.figure(0)
-      ax=fig.add_subplot(111)
-      #
-      ax.plot(Nu/1.e9, blackbody / MJy, 'k', lw=2, label=r'CMB')
-      ax.plot(Nu/1.e9, TSZ * 1.e6 / MJy, 'b', lw=2, label=r'tSZ $\times \sim 10^6$')
-      ax.axhline(0., color='k')
-      #
-      ax.legend(loc=1)
-      #      ax.set_ylim(1.e-7, 1.e3)
-      ax.set_xlabel(r'frequency $\nu$ [GHz]')
-      ax.set_ylabel(r'specific intensity $I_\nu$ [MJy]')
-      #
-      #fig.savefig("./figures/cmb/tsz_freq_dpdce.pdf", bbox_inches='tight')
-      
-
-      # Plot CMB, tSZ, kSZ, CIB, with reasonable amplitudes
-      # in intensity, in MJy
-      fig=plt.figure(1)
-      ax=fig.add_subplot(111)
-      #
-      ax.plot(Nu/1.e9, blackbody / MJy, 'k', lw=2, label=r'mean CMB $\sim 2.726$K')
-      ax.plot(Nu/1.e9, CMBfluct / MJy, 'gray', lw=2, label=r'CMB fluctuations $\sim 110\mu$K')
-      ax.plot(Nu/1.e9, TSZ / MJy, 'b', lw=2, label=r'tSZ $\sim 0.1\mu$K')
-      ax.plot(Nu/1.e9, - TSZ / MJy, 'b--', lw=2)
-      ax.plot(Nu/1.e9, KSZ / MJy, 'r', lw=2, label=r'kSZ $\sim 0.1\mu$K')
-      ax.plot(Nu/1.e9, CIB / MJy, 'g', lw=2, label=r'CIB, arbitrary amplitude')
-      #ax.axhline(0., color='k')
-      #
-      ax.legend(loc=2)
-      ax.set_yscale('log', nonposy='mask')
-      ax.set_xscale('log')
-      ax.set_ylim(1.e-10, 1.e10)
-      ax.set_xlabel(r'frequency $\nu$ [GHz]')
-      ax.set_ylabel(r'specific intensity $I_\nu$ [MJy]')
-      #
-      #fig.savefig("./figures/cmb/freq_dpdces_loglog.pdf", bbox_inches='tight')
-
-      plt.show()
-
-
-   ###############################################################################
-   # CIB Poisson and clustered
-
-   def fCIBPoisson(self, l, nu1=None, nu2=None):
+   def fCIBPoisson(self, l):
+      '''CIB Poisson
+      '''
       a_CIBP = 7.0
       Td = 9.7
       betaP = 2.1
-      if nu1 is None:
-         nu1 = self.nu1
-      if nu2 is None:
-         nu2 = self.nu2
-      return a_CIBP * (l/3000.)**2 * self.mu(nu1, betaP, Td)*self.mu(nu2, betaP, Td)/self.mu(150.e9, betaP, Td)**2 * self.fdl_to_cl(l)
+      result = a_CIBP * (l/3000.)**2 * self.fdl_to_cl(l)
+      result *= self.cibPoissonFreqDpdceT(self.nu1) * self.cibPoissonFreqDpdceT(self.nu2) / self.cibPoissonFreqDpdceT(self.nu0)**2
+      return result
+   
 
    def fCIBClustered(self, l, nu1=None, nu2=None):
+      '''CIB Clustered
+      '''
       a_CIBC = 5.7
       n = 1.2
       Td = 9.7
       betaC = 2.1
-      if nu1 is None:
-         nu1 = self.nu1
-      if nu2 is None:
-         nu2 = self.nu2
-      return a_CIBC * (l/3000.)**(2-n) * self.mu(nu1, betaC, Td)*self.mu(nu2, betaC, Td)/self.mu(150.e9, betaC, Td)**2 * self.fdl_to_cl(l)
-   
-   def fCIB(self, l, nu1=None, nu2=None):
-      return self.fCIBPoisson(l, nu1, nu2) + self.fCIBClustered(l, nu1, nu2)
+      result = a_CIBC * (l/3000.)**(2-n) * self.fdl_to_cl(l)
+      result *= self.cibClusteredFreqDpdceT(self.nu1) * self.cibClusteredFreqDpdceT(self.nu2) / self.cibClusteredFreqDpdceT(self.nu0)**2
+      return result
 
-   ###############################################################################
-   # radio point sources, Poisson only
+
+   def fCIB(self, l):
+      '''CIB Poisson + Clustered
+      '''
+      return self.fCIBPoisson(l) + self.fCIBClustered(l)
+
 
    def fradioPoisson(self, l):
+      '''Radio Poisson
+      '''
       alpha_s = -0.5
       a_s = 3.2
-      return a_s * (l/3000.)**2 * (self.nu1*self.nu2/150.e9**2)**alpha_s * self.g(self.nu1, self.Tcmb)*self.g(self.nu2, self.Tcmb)/self.g(150.e9, self.Tcmb)**2 * self.fdl_to_cl(l)
+      result = a_s * (l/3000.)**2* self.fdl_to_cl(l)
+      result *= self.radioPoissonFreqDpdceT(self.nu1) * self.radioPoissonFreqDpdceT(self.nu2) / self.radioPoissonFreqDpdceT(self.nu0)**2
+      return result
 
-   ###############################################################################
-   # galactic dust
 
    def fgalacticDust(self, l):
+      '''Galactic dust
+      '''
       beta_g = 3.8
       n_g = -0.7
       a_ge = 0.9
       a_gs = 0.7  # 95% confidence limit
-      return a_gs * (l/3000.)**2 * (self.nu1*self.nu2/150.e9**2)**beta_g * self.g(self.nu1, self.Tcmb)*self.g(self.nu2, self.Tcmb)/self.g(150.e9, self.Tcmb)**2 * self.fdl_to_cl(l)
+      result = a_gs * (l/3000.)**2 * self.fdl_to_cl(l)
+      result *= self.galacticDustFreqDpdceT(self.nu1) * self.galacticDustFreqDpdceT(self.nu2) / self.galacticDustFreqDpdceT(self.nu0)**2
+      return result
+
+
+
    
+   ###############################################################################
    ###############################################################################
    # atmospheric noise in temperature and polarization
    # only implemented for 150GHz
@@ -366,443 +254,458 @@ class CMB(object):
    
 
    ###############################################################################
+   ###############################################################################
+   # beam and detector noise
+
+   def fbeamTheta(self, theta, fwhm=None):
+      if fwhm is None:
+         fwhm = self.fwhm
+      sigma_beam = fwhm / np.sqrt(8.*np.log(2.))
+      return np.exp(-0.5*theta**2/sigma_beam**2) / (2.*np.pi*sigma_beam**2)
    
-   # total
-   def ftotal(self, l):
-      result = self.flensedTT(l)
-      result += self.fCIBPoisson(l)
-      result += self.fCIBClustered(l)
-      result += self.ftSZ(l)
-      result += self.fkSZ(l)
-      result += self.ftSZ_CIB(l)
-      result += self.fradioPoisson(l)
-      result += self.fgalacticDust(l)
-      result += self.fdetectorNoise(l)
+   def fbeam(self, l, fwhm=None):
+      if fwhm==0.:
+         return 1.
+      elif fwhm is None:
+         fwhm = self.fwhm
+      sigma_beam = self.fwhm / np.sqrt(8.*np.log(2.))
+      return np.exp(-0.5*l**2 * sigma_beam**2)
+   
+   def fdetectorNoise(self, l):
+      return self.sensitivity**2 / self.fbeam(l)**2
+
+
+   ##################################################################################
+   ##################################################################################
+   # Black body intensity and conversions
+
+
+   def blackbody(self, nu, T):
+      '''blackbody function
+      input: nu [Hz], T thermo temperature of the black body [K]
+      output in SI: [W / Hz / m^2 / sr]
+      '''
+      x = self.h*nu/(self.kB*T)
+      result = 2.*self.h*nu**3 /self.c**2
+      result /= np.exp(x) - 1.
       return result
 
-   
-   ###############################################################################
+   def dBdT(self, nu, T):
+      '''d(blackbody)/dT, such that
+      dI = d(blackbody)/dT * dT
+      input: nu [Hz], T thermo temperature of the black body [K]
+      output in SI: [W / Hz / m^2 / sr / K]
+      '''
+      x = self.h*nu/(self.kB*T)
+      result = 2.*self.h**2*nu**4
+      result /= self.kB*T**2*self.c**2
+      result *= np.exp(x) / (np.exp(x) - 1.)**2
+      return result
+
+   def dlnBdlnT(self, nu, T):
+      '''dlnBlackbody/dlnT
+      input: nu [Hz], T thermo temperature of the black body [K]
+      output is dimensionless
+      '''
+      x = self.h*nu/(self.kB*T)
+      return x * np.exp(x) / (np.exp(x) - 1.)
+
+   def dBdTrj(self, nu, T):
+      '''d(blackbody)/dTrj, where Trj is the Rayleigh-Jeans brightness temperature,
+       such that:
+      dI = d(blackbody)/dTrj * dTrj
+      input: nu [Hz], T thermo temperature [K]
+      output in SI: [W / Hz / m^2 / sr / Krj]
+      '''
+      result = 2. * nu**2 * self.kB / self.c**2
+      return result
 
 
-   def testInterpCMB(self):
-      data = np.genfromtxt("./input/universe_FerraroHensley14/lensedCls.dat")
-      L = np.logspace(np.log10(1.), np.log10(1.e4), 1.e4, 10.)
-      Interp = np.array(map(self.fCMB_template, L))
+   ##################################################################################
+   # Conversion between SI, Jy/sr, Kthermo, Krj
+
+   def convertIntSITo(self, nu, kind="intSI"):
+      '''kind: "intSI", "intJy/sr", "tempKcmb", "tempKrj"
+      '''
+      if kind=="intSI":
+         result = 1.
+      elif kind=="intJy/sr":
+         result = 1. / self.Jy
+      elif kind=="tempKcmb":
+         result = 1. / self.dBdT(nu, self.Tcmb)
+      elif kind=="tempKrj":
+         result = 1. / self.dBdTrj(nu, self.Tcmb)
+      return result
+
+
+   ##################################################################################
+   # Frequency dependences of the various components, in intensity
+
+   def cmbMonopoleFreqDpdceInt(self, nu):
+      '''This is the frequency dependence of a blackbody at the temperature of the CMB,
+      like the CMB monopole.
+      Intensity units ([W/Hz/m^2/sr] or [Jy/sr])
+      arbitrary normalization
+      '''
+      return self.blackbody(nu, self.Tcmb)
+
+   def cmbFluctuationsFreqDpdceInt(self, nu):
+      '''The CMB fluctuations, ie after subtracting the mean,
+      have a different frequency dependence,
+      since the intensity is nonlinear in the temperature:
+      delta I_nu = B_nu(T0+dT) - B_nu(T0)
+      = dB_nu(T0)/dT * dT + (correction that is smaller by a factor dT)
+      Intensity units ([W/Hz/m^2/sr] or [Jy/sr])
+      arbitrary normalization
+      '''
+      return self.dBdT(nu, self.Tcmb)
+
+   def kszFreqDpdceInt(self, nu):
+      '''Intensity units ([W/Hz/m^2/sr] or [Jy/sr])
+      arbitrary normalization
+      '''
+      return self.blackbody(nu, self.Tcmb)
+
+   def tszFreqDpdceInt(self, nu):
+      '''Intensity units ([W/Hz/m^2/sr] or [Jy/sr])
+      arbitrary normalization
+      '''
+      # freq dpdce such that dT/T = (freq dpdce) * 2.*y
+      x = self.h*nu/(self.kB*self.Tcmb)
+      result = x*(np.exp(x)+1.)/(np.exp(x)-1.) -4.
+      # freq dpdce such that dT = (freq dpdce) * 2.*y
+      result *= self.Tcmb
+      # freq dpdce such that dI = (freq dpdce) * 2.*y
+      result *= self.blackbody(nu, self.Tcmb)
+      return result
+
+   def cibPoissonFreqDpdceInt(self, nu):
+      '''Intensity units ([W/Hz/m^2/sr] or [Jy/sr])
+      arbitrary normalization
+      '''
+      Td = 9.7
+      betaP = 2.1
+      return nu**betaP * self.blackbody(nu, Td)
    
-      fig=plt.figure(0)
-      ax=plt.subplot(111)
+
+   def cibClusteredFreqDpdceInt(self, nu):
+      '''Intensity units ([W/Hz/m^2/sr] or [Jy/sr])
+      arbitrary normalization
+      '''
+      Td = 9.7
+      betaC = 2.1
+      return nu**betaC * self.blackbody(nu, Td)
+
+   def radioPoissonFreqDpdceInt(self, nu):
+      '''Intensity units ([W/Hz/m^2/sr] or [Jy/sr])
+      arbitrary normalization
+      '''
+      alpha_s = -0.5
+      return nu**alpha_s
+
+   def galacticDustFreqDpdceInt(self, nu):
+      '''Intensity units ([W/Hz/m^2/sr] or [Jy/sr])
+      arbitrary normalization
+      '''
+      beta_g = 3.8
+      return nu**beta_g
+
+
+   ##################################################################################
+
+
+   def saveFreqDpdce(self):
+      '''Precompute the various frequency dependences, in the various units.
+      '''
+      # Frequencies to evaluate
+      self.nNu = 501
+      self.Nu = np.logspace(np.log10(0.1), np.log10(1.e4), self.nNu, 10.)*1.e9   # in Hz
+
+      data = np.zeros((self.nNu, 25))
+      data[:,0] = self.Nu.copy()
+
+      # Intensity freq dpdces
+      data[:,1] = np.array(list(map(self.cmbMonopoleFreqDpdceInt, self.Nu)))
+      data[:,2] = np.array(list(map(self.cmbFluctuationsFreqDpdceInt, self.Nu)))
+      data[:,3] = np.array(list(map(self.kszFreqDpdceInt, self.Nu)))
+      data[:,4] = np.array(list(map(self.tszFreqDpdceInt, self.Nu)))
+      data[:,5] = np.array(list(map(self.cibPoissonFreqDpdceInt, self.Nu)))
+      data[:,6] = np.array(list(map(self.cibClusteredFreqDpdceInt, self.Nu)))
+      data[:,7] = np.array(list(map(self.radioPoissonFreqDpdceInt, self.Nu)))
+      data[:,8] = np.array(list(map(self.galacticDustFreqDpdceInt, self.Nu)))
+
+      # Thermo temperature freq dpdces
+      f = lambda nu: self.convertIntSITo(nu, kind="tempKcmb")
+      intToTemp = np.array(list(map(f, self.Nu)))
       #
-      ax.semilogx(L, abs(Interp), 'g')
-      ax.semilogx(data[:,0], data[:,1], 'b.')
+      data[:,9] = data[:,1] * intToTemp
+      data[:,10] = data[:,2] * intToTemp
+      data[:,11] = data[:,3] * intToTemp
+      data[:,12] = data[:,4] * intToTemp
+      data[:,13] = data[:,5] * intToTemp
+      data[:,14] = data[:,6] * intToTemp
+      data[:,15] = data[:,7] * intToTemp
+      data[:,16] = data[:,8] * intToTemp
+
+      # Rayleigh-Jeans temperature freq dpdces
+      f = lambda nu: self.convertIntSITo(nu, kind="tempKrj")
+      intToTempRJ = np.array(list(map(f, self.Nu)))
+      #
+      data[:,17] = data[:,1] * intToTempRJ
+      data[:,18] = data[:,2] * intToTempRJ
+      data[:,19] = data[:,3] * intToTempRJ
+      data[:,20] = data[:,4] * intToTempRJ
+      data[:,21] = data[:,5] * intToTempRJ
+      data[:,22] = data[:,6] * intToTempRJ
+      data[:,23] = data[:,7] * intToTempRJ
+      data[:,24] = data[:,8] * intToTempRJ
+
+      
+      np.savetxt(self.pathFreqDpdces, data)
+
+
+   def loadFreqDpdce(self):
+      data = np.genfromtxt(self.pathFreqDpdces)
+      self.Nu = data[:,0]
+
+      # interpolate the freq dpdces for intensity
+      self.cmbMonopoleFreqDpdceI = interp1d(data[:,0], data[:,1], kind='linear', bounds_error=False, fill_value=0.)
+      self.cmbFluctuationsFreqDpdceI = interp1d(data[:,0], data[:,2], kind='linear', bounds_error=False, fill_value=0.)
+      self.kszFreqDpdceI = interp1d(data[:,0], data[:,3], kind='linear', bounds_error=False, fill_value=0.)
+      self.tszFreqDpdceI = interp1d(data[:,0], data[:,4], kind='linear', bounds_error=False, fill_value=0.)
+      self.cibPoissonFreqDpdceI = interp1d(data[:,0], data[:,5], kind='linear', bounds_error=False, fill_value=0.)
+      self.cibClusteredFreqDpdceI = interp1d(data[:,0], data[:,6], kind='linear', bounds_error=False, fill_value=0.)
+      self.radioPoissonFreqDpdceI = interp1d(data[:,0], data[:,7], kind='linear', bounds_error=False, fill_value=0.)
+      self.galacticDustFreqDpdceI = interp1d(data[:,0], data[:,8], kind='linear', bounds_error=False, fill_value=0.)
+
+      # interpolate the freq dpdces for thermodynamical temperature
+      self.cmbMonopoleFreqDpdceT = interp1d(data[:,0], data[:,9], kind='linear', bounds_error=False, fill_value=0.)
+      self.cmbFluctuationsFreqDpdceT = interp1d(data[:,0], data[:,10], kind='linear', bounds_error=False, fill_value=0.)
+      self.kszFreqDpdceT = interp1d(data[:,0], data[:,11], kind='linear', bounds_error=False, fill_value=0.)
+      self.tszFreqDpdceT = interp1d(data[:,0], data[:,12], kind='linear', bounds_error=False, fill_value=0.)
+      self.cibPoissonFreqDpdceT = interp1d(data[:,0], data[:,13], kind='linear', bounds_error=False, fill_value=0.)
+      self.cibClusteredFreqDpdceT = interp1d(data[:,0], data[:,14], kind='linear', bounds_error=False, fill_value=0.)
+      self.radioPoissonFreqDpdceT = interp1d(data[:,0], data[:,15], kind='linear', bounds_error=False, fill_value=0.)
+      self.galacticDustFreqDpdceT = interp1d(data[:,0], data[:,16], kind='linear', bounds_error=False, fill_value=0.)
+
+      # interpolate the freq dpdces for Rayleigh-Jeans temperature
+      self.cmbMonopoleFreqDpdceTrj = interp1d(data[:,0], data[:,17], kind='linear', bounds_error=False, fill_value=0.)
+      self.cmbFluctuationsFreqDpdceTrj = interp1d(data[:,0], data[:,18], kind='linear', bounds_error=False, fill_value=0.)
+      self.kszFreqDpdceTrj = interp1d(data[:,0], data[:,19], kind='linear', bounds_error=False, fill_value=0.)
+      self.tszFreqDpdceTrj = interp1d(data[:,0], data[:,20], kind='linear', bounds_error=False, fill_value=0.)
+      self.cibPoissonFreqDpdceTrj = interp1d(data[:,0], data[:,21], kind='linear', bounds_error=False, fill_value=0.)
+      self.cibClusteredFreqDpdceTrj = interp1d(data[:,0], data[:,22], kind='linear', bounds_error=False, fill_value=0.)
+      self.radioPoissonFreqDpdceTrj = interp1d(data[:,0], data[:,23], kind='linear', bounds_error=False, fill_value=0.)
+      self.galacticDustFreqDpdceTrj = interp1d(data[:,0], data[:,24], kind='linear', bounds_error=False, fill_value=0.)
+
+
+   def plotFreqDpdce(self, lMin=2.e3, lMax=3.e3):
+      '''Computes the RMS temperature fluctuation of each component
+      between the specified lMin and lMax,
+      then shows its frequency dependence.
+      '''
+      
+      # RMS temperature fluctuations in muK, at current experiment frequencies,
+      # with current experimental beam
+      # within the lMax and lMin chosen
+      dTcmb = self.rmsT(self.flensedTT, lMin=lMin, lMax=lMax, fwhm=None)
+      dTksz = self.rmsT(self.fkSZ, lMin=lMin, lMax=lMax, fwhm=None)
+      dTtsz = self.rmsT(self.ftSZ, lMin=lMin, lMax=lMax, fwhm=None)
+      dTcib = self.rmsT(self.fCIB, lMin=lMin, lMax=lMax, fwhm=None)
+      dTradiops = self.rmsT(self.fradioPoisson, lMin=lMin, lMax=lMax, fwhm=None)
+      
+      
+      # Temperatures [muKcmb], as a function of freq
+      DTcmbMonopole = dTcmb * self.cmbMonopoleFreqDpdceT(self.Nu)
+      DTcmbMonopole /= np.sqrt( self.cmbMonopoleFreqDpdceT(self.nu1) * self.cmbMonopoleFreqDpdceT(self.nu2) )
+      #
+      DTcmbFluctuations = dTcmb * self.cmbFluctuationsFreqDpdceT(self.Nu)
+      DTcmbFluctuations /= np.sqrt( self.cmbFluctuationsFreqDpdceT(self.nu1) * self.cmbFluctuationsFreqDpdceT(self.nu2) )
+      #
+      DTksz = dTksz * self.kszFreqDpdceT(self.Nu)
+      DTksz /= np.sqrt( self.kszFreqDpdceT(self.nu1) * self.kszFreqDpdceT(self.nu2) )
+      #
+      DTtsz = dTtsz * self.tszFreqDpdceT(self.Nu)
+      DTtsz /= np.sqrt( self.tszFreqDpdceT(self.nu1) * self.tszFreqDpdceT(self.nu2) )
+      #
+      DTcib = dTcib * self.cibPoissonFreqDpdceT(self.Nu)
+      DTcib /= np.sqrt( self.cibPoissonFreqDpdceT(self.nu1) * self.cibPoissonFreqDpdceT(self.nu2) )
+      #
+      DTradiops = dTradiops * self.radioPoissonFreqDpdceT(self.Nu)
+      DTradiops /= np.sqrt( self.radioPoissonFreqDpdceT(self.nu1) * self.radioPoissonFreqDpdceT(self.nu2) )
+      
+      
+      # Intensities [Jy/sr], as a function of freqs
+      # convert from muK to Jy/sr
+      factor = 1.e-6 # convert to K
+      factor /= self.convertIntSITo(self.Nu, kind="tempKcmb")  # convert to SI
+      factor *= self.convertIntSITo(self.Nu, kind="intJy/sr")  # convert to Jy/sr
+      #
+      DIcmbMonopole = DTcmbMonopole * factor
+      DIcmbFluctuations = DTcmbFluctuations * factor
+      DIksz = DTksz * factor
+      DItsz = DTtsz * factor
+      DIcib = DTcib * factor
+      DIradiops = DTradiops * factor
+
+      # Rayleigh-Jeans temperatures [muKrj], as a function of freq
+      # convert from muK to muKrj
+      factor = self.convertIntSITo(self.Nu, kind="tempKrj")
+      factor /= self.convertIntSITo(self.Nu, kind="tempKcmb")
+      #
+      DTcmbMonopoleRJ = DTcmbMonopole * factor
+      DTcmbFluctuationsRJ = DTcmbFluctuations * factor
+      DTkszRJ = DTksz * factor
+      DTtszRJ = DTtsz * factor
+      DTcibRJ = DTcib * factor
+      DTradiopsRJ = DTradiops * factor
+      
    
+      # Intensity [Jy/sr]
+      fig=plt.figure(0)
+      ax=fig.add_subplot(111)
+      #
+      ax.axhline(0.)
+      ax.plot(self.Nu/1.e9, DIcmbMonopole, lw=0.5, ls='--', label=r'CMB mono.')
+      ax.plot(self.Nu/1.e9, DIcmbFluctuations, label=r'CMB fluct.')
+      ax.plot(self.Nu/1.e9, DIksz, label=r'kSZ')
+      ax.plot(self.Nu/1.e9, DItsz, label=r'tSZ')
+      ax.plot(self.Nu/1.e9, DIcib, label=r'CIB')
+      ax.plot(self.Nu/1.e9, DIradiops, label=r'Radio PS')
+      #
+      ax.legend(loc=1, fontsize='x-small', labelspacing=0.1)
+      ax.set_xlim((0., 1.e3))
+      ax.set_ylim((-1.e3, 4.e3))
+      ax.set_xlabel(r'$\nu$ [GHz]')
+      ax.set_ylabel(r'$\delta I_\text{RMS}$ [Jy/sr]')
+   
+   
+      # Intensity [Jy/sr], log-log
+      fig=plt.figure(1)
+      ax=fig.add_subplot(111)
+      #
+      ax.axhline(0.)
+      ax.plot(self.Nu/1.e9, DIcmbMonopole, lw=0.5, ls='--', label=r'CMB mono.')
+      ax.plot(self.Nu/1.e9, DIcmbFluctuations, label=r'CMB fluct.')
+      ax.plot(self.Nu/1.e9, DIksz, label=r'kSZ')
+      ax.plot(self.Nu/1.e9, DItsz, 'g', label=r'tSZ')
+      ax.plot(self.Nu/1.e9, -DItsz, 'g--')
+      ax.plot(self.Nu/1.e9, DIcib, label=r'CIB')
+      ax.plot(self.Nu/1.e9, DIradiops, label=r'Radio PS')
+      #
+      ax.legend(loc=2, fontsize='x-small', labelspacing=0.1)
+      ax.set_xscale('log', nonposx='clip')
+      ax.set_yscale('log', nonposy='clip')
+      ax.set_xlim((1., 1.e4))
+      ax.set_ylim((1., 1.e6))
+      ax.set_xlabel(r'$\nu$ [GHz]')
+      ax.set_ylabel(r'$\delta I_\text{RMS}$ [Jy/sr]')
+
+
+      # Temperature [muKcmb]
+      fig=plt.figure(2)
+      ax=fig.add_subplot(111)
+      #
+      ax.axhline(0.)
+      ax.plot(self.Nu/1.e9, DTcmbMonopole, lw=0.5, ls='--', label=r'CMB mono.')
+      ax.plot(self.Nu/1.e9, DTcmbFluctuations, label=r'CMB fluct.')
+      ax.plot(self.Nu/1.e9, DTksz, label=r'kSZ')
+      ax.plot(self.Nu/1.e9, DTtsz, 'g', label=r'tSZ')
+      ax.plot(self.Nu/1.e9, -DTtsz, 'g--')
+      ax.plot(self.Nu/1.e9, DTcib, label=r'CIB')
+      ax.plot(self.Nu/1.e9, DTradiops, label=r'Radio PS')
+      #
+      ax.legend(loc=1, fontsize='x-small', labelspacing=0.1)
+      ax.set_xscale('log', nonposx='clip')
+      ax.set_yscale('log', nonposy='clip')
+      ax.set_ylim((5.e-3, 1.e4))
+      ax.set_xlabel(r'$\nu$ [GHz]')
+      ax.set_ylabel(r'$\delta T_\text{RMS}$ [$\mu$K$_\text{CMB}$]')
+
+
+      # Temperature [muKrj]
+      fig=plt.figure(3)
+      ax=fig.add_subplot(111)
+      #
+      ax.axhline(0.)
+      ax.plot(self.Nu/1.e9, DTcmbMonopoleRJ, lw=0.5, ls='--', label=r'CMB mono.')
+      ax.plot(self.Nu/1.e9, DTcmbFluctuationsRJ, label=r'CMB fluct.')
+      ax.plot(self.Nu/1.e9, DTkszRJ, label=r'kSZ')
+      ax.plot(self.Nu/1.e9, DTtszRJ, 'g', label=r'tSZ')
+      ax.plot(self.Nu/1.e9, -DTtszRJ, 'g--')
+      ax.plot(self.Nu/1.e9, DTcibRJ, label=r'CIB')
+      ax.plot(self.Nu/1.e9, DTradiopsRJ, label=r'Radio PS')
+      #
+      ax.legend(loc=1, fontsize='x-small', labelspacing=0.1)
+      ax.set_xscale('log', nonposx='clip')
+      ax.set_yscale('log', nonposy='clip')
+      ax.set_ylim((5.e-3, 1.e4))
+      ax.set_xlabel(r'$\nu$ [GHz]')
+      ax.set_ylabel(r'$\delta T_\text{RMS}$ [$\mu$K$_\text{RJ}$]')
+
+
       plt.show()
 
 
-   # compute the variance of the temperature at a given point
-   # assuming infinitely small beam (no beam)
-   # in muK
-   def fsigmaNoBeam(self):
-      
-      # lensed CMB
-      f = lambda l: self.flensedTT(l) / self.fdl_to_cl(l) / l
-      result, error = integrate.quad(f, 1., 1.e4, epsabs=0., epsrel=1.e-5)
+   ##################################################################################
+   ##################################################################################
+
+
+
+   def rmsT(self, fcl, lMin=1., lMax=1.e4, fwhm=0.):
+      '''Computes the RMS temperature fluctuation for a component with power spectrum fcl,
+      between the specified lMin and lMax.
+      fwhm = 0. for perfect beam
+      fwhm = None for current experiment beam
+      fwhm = any other value in rad
+      '''
+      f = lambda l: fcl(l) * l / (2.*np.pi) * self.fbeam(l, fwhm=fwhm)**2
+      result, error = integrate.quad(f, lMin, lMax, epsabs=0., epsrel=1.e-5)
       result = np.sqrt(result)
       error = np.sqrt(error)
-      print "- temperature fluctuations due to CMB:", result, "muK"
-      #print "relative error on integral is", error/result
+      return result
 
+
+   def printRmsT(self, fwhm=0.):
+      '''compute the variance of the temperature at a given point
+      in muK.
+      fwhm = 0. for perfect beam
+      fwhm = None for current experiment beam
+      fwhm = any other value in rad
+      '''
+      print("- temperature fluctuations due to CMB:", self.rmsT(self.flensedTT), "muK")
       # detector noise would diverge, because it is a constant divided by the beam**2
-
-      # CIB Poisson and clustered
-      f = lambda l: ( self.fCIBPoisson(l) + self.fCIBClustered(l) )/ self.fdl_to_cl(l) / l
-      result, error = integrate.quad(f, 1., 1.e4, epsabs=0., epsrel=1.e-5)
-      result = np.sqrt(result)
-      error = np.sqrt(error)
-      print "- temperature fluctuations due to CIB:", result, "muK"
-      #print "relative error on integral is", error/result
-      
-      # tSZ
-      f = lambda l: self.ftSZ(l) / self.fdl_to_cl(l) / l
-      result, error = integrate.quad(f, 1., 1.e4, epsabs=0., epsrel=1.e-5)
-      result = np.sqrt(result)
-      error = np.sqrt(error)
-      print "- temperature fluctuations due to tSZ:", result, "muK"
-      #print "relative error on integral is", error/result
-      
-      # kSZ
-      f = lambda l: self.fkSZ(l) / self.fdl_to_cl(l) / l
-      result, error = integrate.quad(f, 1., 1.e4, epsabs=0., epsrel=1.e-5)
-      result = np.sqrt(result)
-      error = np.sqrt(error)
-      print "- temperature fluctuations due to kSZ:", result, "muK"
-      #print "relative error on integral is", error/result
-      
-      return
-
-
-   # compute the variance of the temperature at a given point
-   # in the observed map
-   # i.e. taking into account the beam
-   # in muK
-   def fsigmaWithBeam(self):
-      
-      # lensed CMB
-      f = lambda l: self.flensedTT(l) * (l+1.)/(2.*np.pi)
-      result, error = integrate.quad(f, 1., 1.e4, epsabs=0., epsrel=1.e-5)
-      result = np.sqrt(result)
-      error = np.sqrt(error)
-      print "- temperature fluctuations due to CMB:", result, "muK"
-      #print "relative error on integral is", error/result
-      
-      # detector noise
-      f = lambda l: self.fdetectorNoise(l) * (l+1.)/(2.*np.pi)
-      result, error = integrate.quad(f, 1., 1.e4, epsabs=0., epsrel=1.e-5)
-      result = np.sqrt(result)
-      error = np.sqrt(error)
-      print "- temperature fluctuations due to detector noise:", result, "muK"
-      #print "relative error on integral is", error/result
-      
-      # CIB Poisson and clustered
-      f = lambda l: ( self.fCIBPoisson(l) + self.fCIBClustered(l) ) * (l+1.)/(2.*np.pi)
-      result, error = integrate.quad(f, 1., 1.e4, epsabs=0., epsrel=1.e-5)
-      result = np.sqrt(result)
-      error = np.sqrt(error)
-      print "- temperature fluctuations due to CIB:", result, "muK"
-      #print "relative error on integral is", error/result
-      
-      # tSZ
-      f = lambda l: self.ftSZ(l) * (l+1.)/(2.*np.pi)
-      result, error = integrate.quad(f, 1., 1.e4, epsabs=0., epsrel=1.e-5)
-      result = np.sqrt(result)
-      error = np.sqrt(error)
-      print "- temperature fluctuations due to tSZ:", result, "muK"
-      #print "relative error on integral is", error/result
-      
-      # kSZ
-      f = lambda l: self.fkSZ(l) * (l+1.)/(2.*np.pi)
-      result, error = integrate.quad(f, 1., 1.e4, epsabs=0., epsrel=1.e-5)
-      result = np.sqrt(result)
-      error = np.sqrt(error)
-      print "- temperature fluctuations due to kSZ:", result, "muK"
-      #print "relative error on integral is", error/result
+      print("- temperature fluctuations due to CIB:", self.rmsT(self.fCIB), "muK")
+      print("- temperature fluctuations due to tSZ:", self.rmsT(self.ftSZ), "muK")
+      print("- temperature fluctuations due to kSZ:", self.rmsT(self.fkSZ), "muK")
       
       
-   # outputs the uncertainty on amplitude of profile
-   # given the total power in the map
-   # fprofile: isotropic profile (before beam convolution)
-   # if none, use the beam as profile (ie point source)
-   # If temperature map in muK, then output in muK*sr
-   # If temperature map in Jy/sr, then output in Jy
-   def fsigmaMatchedFilter(self, fprofile=None, ftotalTT=None):
+   def fsigmaMatchedFilter(self, fprofile=None, ftotalTT=None, lMin=None, lMax=None):
+      '''outputs the uncertainty on amplitude of profile
+      given the total power in the map
+      fprofile: isotropic profile (before beam convolution)
+      if none, use the beam as profile (ie point source)
+      If temperature map in muK, then output in muK*sr
+      If temperature map in Jy/sr, then output in Jy
+      '''
       if ftotalTT is None:
          ftotalTT = self.ftotalTT
       if fprofile is None:
          f = lambda l: l/(2.*np.pi) / ftotalTT(l)
       else:
          f = lambda l: l/(2.*np.pi) * fprofile(l) / ftotalTT(l)
-      result = integrate.quad(f, self.lMin, self.lMaxT, epsabs=0., epsrel=1.e-3)[0]
+      if lMin is None:
+         lMin = self.lMin
+      if lMax is None:
+         lMax = self.lMaxT
+      result = integrate.quad(f, lMin, lMax, epsabs=0., epsrel=1.e-3)[0]
       result = 1./np.sqrt(result)
       return result
 
 
-   def plotCl(self):
-      
-      Nl = 1001
-      L = np.logspace(np.log10(1.), np.log10(3.6e4), Nl, 10.)
-      
-      UnlensedTT = np.array(map(lambda l: self.funlensedTT(l), L))
-      LensedCMB = np.array(map(lambda l: self.flensedTT(l), L))
-      CIBPoisson = np.array(map(lambda l: self.fCIBPoisson(l), L))
-      CIBClustered = np.array(map(lambda l: self.fCIBClustered(l), L))
-      TSZ = np.array(map(lambda l: self.ftSZ(l), L))
-      KSZ = np.array(map(lambda l: self.fkSZ(l), L))
-      TSZ_CIB = np.array(map(lambda l: self.ftSZ_CIB(l), L))
-      RadioPoisson = np.array(map(lambda l: self.fradioPoisson(l), L))
-      GalacticDust = np.array(map(lambda l: self.fgalacticDust(l), L))
-      DetectorNoise = np.array(map(lambda l: self.fdetectorNoise(l), L))
-      Total = np.array(map(lambda l: self.ftotalTT(l), L))
-      
-      '''
-      # save arrays
-      Data = np.zeros((Nl, 11))
-      Data[:,0] = L
-      Data[:,1] = LensedCMB
-      Data[:,2] = CIBPoisson
-      Data[:,3] = CIBClustered
-      Data[:,4] = TSZ
-      Data[:,5] = KSZ
-      Data[:,6] = TSZ_CIB
-      Data[:,7] = RadioPoisson
-      Data[:,8] = GalacticDust
-      Data[:,9] = DetectorNoise
-      Data[:,10] = Total
-      #np.savetxt("./output/dl_elldpdtILC_ACT148_ACT218.txt", Data)
-      #np.savetxt("./output/dl_ACT148.txt", Data)
-      '''
-      
-      
-      # debeamed power spectrum
-      fig=plt.figure(0)
-      ax=fig.add_subplot(111)
-      #
-      ax.loglog(L, UnlensedTT, 'g', label=r'unlensed TT')
-      ax.loglog(L, DetectorNoise, 'r', label=r'Detector noise')
-      ax.loglog(L, Total, 'k', label=r'total TT')
-      #
-      ax.legend(loc=1)
-      ax.set_xlabel(r'\ell')
-      ax.set_ylabel(r'$C_\ell$')
-      
-      
-      # debeamed Cl
-      fig=plt.figure(1, figsize=(12, 8))
-      ax=plt.subplot(111)
-      #
-      ax.loglog(L, abs(LensedCMB), 'r', lw=2, label=r'CMB')
-      ax.loglog(L, CIBPoisson, 'b--', lw=2, label=r'CIB poisson')
-      ax.loglog(L, CIBClustered, 'b--', lw=2, label=r'CIB clustered')
-      ax.loglog(L, TSZ, 'g', lw=2, label=r'tSZ')
-      ax.loglog(L, KSZ, 'g--', lw=2, label=r'kSZ')
-      ax.loglog(L, np.abs(TSZ_CIB), 'm', lw=2, label=r'$|$ tSZ x CIB $|$')
-      ax.loglog(L, RadioPoisson, 'y', lw=2, label=r'radio Poisson')
-      ax.loglog(L, GalacticDust, 'r', lw=2, label=r'galactic dust')
-      ax.loglog(L, DetectorNoise, 'k--', lw=2, label=r'detector noise')
-      ax.loglog(L, Total, 'k', lw=2, label=r'total')
-      ax.loglog(L, LensedCMB+DetectorNoise, 'k-.', lw=2, label=r'CMB+detector noise')
-      #
-      ax.grid()
-      ax.legend(loc=1)
-      ax.set_xlim((1.e2, 1.e4))
-      #ax.set_xlim((100., 3.6e4))
-      ax.set_ylim((1.e-8, 1.e1))
-      ax.set_xlabel(r'$\ell$')
-      ax.set_ylabel(r'$C_\ell$ [$(\mu K)^2$]')
-      #ax.set_title(r'map noise, corrected for beam('+self.name+')')
-      #
-      #fig.savefig("./figures/pixel_noise/pixelnoiseCl_"+self.name+".pdf")
-      
-      '''
-      # debeamed Dl
-      fig=plt.figure(2, figsize=(12, 8))
-      ax=plt.subplot(111)
-      #
-      ax.loglog(L, abs(LensedCMB)/self.fdl_to_cl(L), 'r', lw=2, label=r'CMB')
-      ax.loglog(L, CIBPoisson/self.fdl_to_cl(L), 'b--', lw=2, label=r'CIB poisson')
-      ax.loglog(L, CIBClustered/self.fdl_to_cl(L), 'b--', lw=2, label=r'CIB clustered')
-      ax.loglog(L, TSZ/self.fdl_to_cl(L), 'g', lw=2, label=r'tSZ')
-      ax.loglog(L, KSZ/self.fdl_to_cl(L), 'g--', lw=2, label=r'kSZ')
-      ax.loglog(L, np.abs(TSZ_CIB)/self.fdl_to_cl(L), 'm', lw=2, label=r'$|$ tSZ x CIB $|$')
-      ax.loglog(L, RadioPoisson/self.fdl_to_cl(L), 'y', lw=2, label=r'radio Poisson')
-      ax.loglog(L, GalacticDust/self.fdl_to_cl(L), 'r', lw=2, label=r'galactic dust')
-      ax.loglog(L, DetectorNoise/self.fdl_to_cl(L) * np.sqrt(2./(2.*L+1.)), 'k--', lw=2, label=r'detector noise')
-      #ax.loglog(L, Total/self.fdl_to_cl(L), 'k', lw=2, label=r'total')
-      #
-      ax.grid()
-      ax.legend(loc='center left')
-      #ax.set_xlim((1.e2, 1.e4))
-      ax.set_ylim((1.e-4, 1.e4))
-      ax.set_xlabel(r'$\ell$')
-      ax.set_ylabel(r'$D_\ell$ [$(\mu K)^2$]')
-      ax.set_title(r'map noise, correcting for beam, and reducing noise ('+self.name+')')
-      #
-      #fig.savefig("./figures/pixel_noise/Dl_"+self.name+".pdf")
-      '''
-      plt.show()
 
-
-
-   def plotClfewer(self):
-      
-      Nl = 1001
-      L = np.logspace(np.log10(1.), np.log10(3.6e4), Nl, 10.)
-      
-      LensedCMB = np.array(map(lambda l: self.flensedTT(l), L))
-      CIBPoisson = np.array(map(lambda l: self.fCIBPoisson(l), L))
-      CIBClustered = np.array(map(lambda l: self.fCIBClustered(l), L))
-      TSZ = np.array(map(lambda l: self.ftSZ(l), L))
-      KSZ = np.array(map(lambda l: self.fkSZ(l), L))
-      TSZ_CIB = np.array(map(lambda l: self.ftSZ_CIB(l), L))
-      RadioPoisson = np.array(map(lambda l: self.fradioPoisson(l), L))
-      GalacticDust = np.array(map(lambda l: self.fgalacticDust(l), L))
-      DetectorNoise = np.array(map(lambda l: self.fdetectorNoise(l), L))
-      Total = np.array(map(lambda l: self.ftotalTT(l), L))
-      
-      '''
-      # save arrays
-      Data = np.zeros((Nl, 11))
-      Data[:,0] = L
-      Data[:,1] = LensedCMB
-      Data[:,2] = CIBPoisson
-      Data[:,3] = CIBClustered
-      Data[:,4] = TSZ
-      Data[:,5] = KSZ
-      Data[:,6] = TSZ_CIB
-      Data[:,7] = RadioPoisson
-      Data[:,8] = GalacticDust
-      Data[:,9] = DetectorNoise
-      Data[:,10] = Total
-      #np.savetxt("./output/dl_elldpdtILC_ACT148_ACT218.txt", Data)
-      #np.savetxt("./output/dl_ACT148.txt", Data)
-      '''
-      
-      #return Total - DetectorNoise
-      
-      # pixel noise power spectrum Cl
-      # this time in terms of what is actually on the sky,
-      # ie after beam correction
-      fig=plt.figure(0, figsize=(12, 8))
-      ax=plt.subplot(111)
-      #
-      Beam = np.array(map(self.fbeam , L))
-      factor = L*(L+1.)/(2.*np.pi) / Beam**2
-      #
-      ax.loglog(L, factor*Total, 'k', lw=5, label=r'total')
-      ax.loglog(L, factor*abs(LensedCMB), 'b', lw=3, label=r'lensed CMB')
-      ax.loglog(L, factor*DetectorNoise, 'k--', lw=3, label=r'detector noise')
-      ax.loglog(L, factor*(CIBPoisson+CIBClustered+TSZ+TSZ_CIB+RadioPoisson+GalacticDust), 'g-', lw=3, label=r'tSZ, CIB, Radio sources, dust')
-      ax.loglog(L, factor*KSZ, 'r', lw=5, label=r'kSZ')
-      #
-      # beam for cmb s4
-      def fbeamS4(l):
-         fwhm = 1. * (np.pi/180.) / 60.   # 1 arcmin
-         sigma_beam = fwhm / np.sqrt(8.*np.log(2.))
-         return np.exp(-0.5*l**2 * sigma_beam**2)
-      #
-      # detector noise for cmb s4
-      sensitivity = 1.*(np.pi/180.)/60.   # 1muK.arcmin
-      factor = L*(L+1.)/(2.*np.pi) / fbeamS4(L)**2
-      ax.loglog(L, factor*sensitivity**2, 'k--', lw=3)
-      
-      #ax.loglog(L, CIBPoisson, 'b--', lw=2, label=r'CIB poisson')
-      #ax.loglog(L, CIBClustered, 'b--', lw=2, label=r'CIB clustered')
-      #ax.loglog(L, TSZ, 'g', lw=2, label=r'tSZ')
-      #ax.loglog(L, np.abs(TSZ_CIB), 'm', lw=2, label=r'$|$ tSZ x CIB $|$')
-      #ax.loglog(L, RadioPoisson, 'y', lw=2, label=r'radio Poisson')
-      #ax.loglog(L, GalacticDust, 'r', lw=2, label=r'galactic dust')
-      #ax.loglog(L, LensedCMB+DetectorNoise, 'k-.', lw=2, label=r'CMB+detector noise')
-      #
-      ax.grid()
-      ax.legend(loc='center left')
-      ax.set_xlim((1.e2, 1.e4))
-      ax.set_ylim((1.e-1, 1.e4))
-      ax.set_xlabel(r'$\ell$', fontsize=28)
-      ax.set_ylabel(r'$\frac{\ell (\ell+1)}{2\pi} \;  C_\ell$ [$(\mu K)^2$]', fontsize=28)
-      #ax.set_title(r'Pixel noise $C_l$ ('+self.name+')')
-      #
-      #fig.savefig("./figures/pixel_noise/pixelnoiseCl_"+self.name+".pdf")
-      #fig.savefig("~/Desktop/plot_cl_talk.pdf")
-      
-      plt.show()
-
-
-
-   def plotTEB(self):
-      
-      Nl = 1001
-      L = np.logspace(np.log10(1.), np.log10(3.6e4), Nl, 10.)
-
-      unlensedTT = np.array(map(self.funlensedTT, L))
-      unlensedEE = np.array(map(self.funlensedEE, L))
-      unlensedTE = np.array(map(self.funlensedTE, L))
-      unlensedBB = np.array(map(self.funlensedBB, L))
-      #
-      lensedTT = np.array(map(self.flensedTT, L))
-      lensedEE = np.array(map(self.flensedEE, L))
-      lensedTE = np.array(map(self.flensedTE, L))
-      lensedBB = np.array(map(self.flensedBB, L))
-      #
-      totalTT = np.array(map(self.ftotalTT, L))
-      totalEE = np.array(map(self.ftotalEE, L))
-      totalTE = np.array(map(self.ftotalTE, L))
-      totalBB = np.array(map(self.ftotalBB, L))
-      #
-      Noise = np.array(map(self.fdetectorNoise, L))
-      AtmNoiseTT = np.array(map(self.fatmosphericNoiseTT, L))
-      AtmNoisePP = np.array(map(self.fatmosphericNoisePP, L))
-
-      f = 1./self.fdl_to_cl(L)
-      # Dl, beam corrected
-      fig=plt.figure(1, figsize=(12, 8))
-      ax=plt.subplot(111)
-      #
-#      ax.loglog(L, f*unlensedTT, 'k--', lw=2)
-#      ax.loglog(L, f*unlensedEE, 'b--', lw=2)
-#      ax.loglog(L, f*unlensedTE, 'r--', lw=2)
-#      ax.loglog(L, f*unlensedBB, 'g--', lw=2)
-      #
-      ax.loglog(L, f*lensedTT, 'k', lw=2, label=r'TT')
-      ax.loglog(L, f*lensedEE, 'b', lw=2, label=r'EE')
-      ax.loglog(L, f*np.abs(lensedTE), 'r', lw=2, label=r'TE')
-      ax.loglog(L, f*lensedBB, 'g', lw=2, label=r'BB')
-      #
-      ax.loglog(L, f*totalTT, 'k', lw=1)
-#      ax.loglog(L, f*(Noise + AtmNoiseTT), 'k:')
-      ax.loglog(L, f*totalEE, 'b', lw=1)
-#      ax.loglog(L, f*(2.*Noise + AtmNoisePP), 'b:')
-      ax.loglog(L, f*np.abs(totalTE), 'r', lw=1)
-      ax.loglog(L, f*totalBB, 'g', lw=1)
-#      ax.loglog(L, f*(2.*Noise + AtmNoisePP), 'g:')
-      #
-      ax.grid()
-      ax.legend(loc=1)
-      #ax.set_xlim((1.e2, 1.e4))
-      ax.set_ylim((1.e-6, 1.e5))
-      ax.set_xlabel(r'$\ell$')
-      ax.set_ylabel(r'$D_\ell$ [$(\mu K)^2$]')
-      #ax.set_title(r'unlensed/lensed/lensed+noise, corrected for beam ('+self.name+')')
-      #
-      path = "/Users/Emmanuel/Desktop/cmb_dl.pdf"
-      #fig.savefig(path, bbox_inches='tight')
-      
-      plt.show()
-
-
-   def plotCIB(self):
-      Nl = 1001
-      L = np.logspace(np.log10(1.), np.log10(3.6e4), Nl, 10.)
-      
-      # frequencies in Hz
-      #Nu = np.array([100., 143., 217., 353., 545., 857.]) * 1.e9
-      Nu = np.array([353.e9])
-      nNu = len(Nu)
-      
-      fig=plt.figure(0)
-      ax=fig.add_subplot(111)
-      #
-      for iNu in range(nNu):
-         nu = Nu[iNu]
-         CIBPoisson = np.array(map(lambda l: self.fCIBPoisson(l, nu, nu), L))
-         CIBClustered = np.array(map(lambda l: self.fCIBClustered(l, nu, nu), L))
-         #
-         ax.plot(L, CIBClustered, c=plt.cm.rainbow(float(iNu)/nNu), lw=2, label=str(int(nu/1.e9))+'GHz, clustered')
-         ax.plot(L, CIBPoisson, c=plt.cm.rainbow(float(iNu)/nNu), ls='--', lw=2, label=str(int(nu/1.e9))+'GHz, Poisson')
-      #
-      ax.set_xscale('log')
-      ax.set_yscale('log', nonposx='clip')
-      ax.legend(loc=1)
-      ax.set_xlim((1.e1, 1.e4))
-      ax.set_xlabel(r'$\ell$', fontsize=24)
-      ax.set_ylabel(r'$C_\ell$ [$(\mu K)^2$]', fontsize=24)
-      #
-      #fig.savefig("./figures/cmb/cl_cib_dunkley+13.pdf", bbox_inches='tight')
-      
-      plt.show()
-
-
-
-
-   def timeT(self):
-      tStart = time()
-      
-      Nl = 1001
-      L = np.logspace(np.log10(1.), np.log10(3.6e4), Nl, 10.)
-      for il in range(Nl):
-         l = L[il]
-         result = self.ftotalTT(l)
-         #result = self.flensedTT(l)
-      
-      tStop = time()
-      print "took", (tStop-tStart)/Nl, "sec per evaluation"
+   ##################################################################################
+   ##################################################################################
 
 
    def genWiggleNoWiggle(self, test=False):
@@ -811,17 +714,17 @@ class CMB(object):
       """
 
       L = np.linspace(10., 1.e4, 2001)
-      ClCmb = np.array(map(self.funlensedTT, L))
+      ClCmb = np.array(list(map(self.funlensedTT, L)))
 
       # no-wiggle power spectrum
       forUnlensedTTNoWiggle = UnivariateSpline(np.log(L), np.log(ClCmb), k=3, s=20., ext='const')
       funlensedTTNoWiggle = lambda l: np.exp(forUnlensedTTNoWiggle(np.log(l)))
-      ClCmbNoWiggle = np.array(map(funlensedTTNoWiggle, L))
+      ClCmbNoWiggle = np.array(list(map(funlensedTTNoWiggle, L)))
 
       # wiggle-only power spewctrum
       forUnlensedTTWiggleOnly = UnivariateSpline(np.log(L), ClCmb-ClCmbNoWiggle, k=3, s=0., ext='const')
       funlensedTTWiggleOnly = lambda l: forUnlensedTTWiggleOnly(np.log(l))
-      ClCmbWiggleOnly = np.array(map(funlensedTTWiggleOnly, L))
+      ClCmbWiggleOnly = np.array(list(map(funlensedTTWiggleOnly, L)))
 
       if test:
          
@@ -858,154 +761,103 @@ class CMB(object):
       return funlensedTTNoWiggle, funlensedTTWiggleOnly
 
 
+   ##################################################################################
+   ##################################################################################
+   # Plot power spectra
 
-###############################################################################
-###############################################################################
-# ACT 148GHz map
+   def plotCl(self):
+      '''Show power spectra of TT, EE, TE, BB, debeamed.
+      '''
+      Nl = 1001
+      L = np.logspace(np.log10(1.), np.log10(3.6e4), Nl, 10.)
 
-class ACT148CMB(CMB):
-   
-   def __init__(self):
-      # name
-      self.name = "act148"
-      # frequencies in Hz
-      self.nu1 = 148.e9
-      self.nu2 = 148.e9
-      # beam fwhm in radians (1.4 arcmin at 148GHz, from Hasselfield et al 2013)
-      self.fwhm = 1.4 * (np.pi/180.) / 60.
-      # detector sensitivity in muK*rad. (12 muK.arcmin from a non-reliable source)
-      self.sensitivity = 12.*(np.pi/180.)/60.
-      
-      super(ACT148CMB, self).__init__()
-
-
-###############################################################################
-###############################################################################
-# Planck SMICA map
-
-class PlanckSMICACMB(CMB):
-   
-   def __init__(self):
-      # frequencies in Hz (irrelevant)
-      self.nu1 = 143.e9
-      self.nu2 = 143.e9
-      # beam fwhm in radians (5 arcmin for SMICA, from Planck XII, table 1)
-      self.fwhm = 5. * (np.pi/180.) / 60.
-      # detector sensitivity in muK*rad.
-      # from Planck XII, fig D-2: mostly 143GHz and 217GHz dominate the SMICA map
-      # from Planck VI, table 4, the detector noise for 143 and 217 is 0.8 and 1 muK*deg
-      # I will use 1 muK*deg = 60 muK*arcmin to be conservative
-      self.sensitivity = 60.*(np.pi/180.)/60.
+      fig=plt.figure(0)
+      ax=fig.add_subplot(111)
       #
-      self.lMin = 30.
-      self.lMaxT = 2.e3
-      self.lMaxP = 2.e3
-      # name
-      self.name = "plancksmica_beam5.0_noise60_lmaxT2000_lmaxP2000"
+      f = 1. / self.fdl_to_cl(L)
+      #
+      ax.loglog(L, f * self.flensedTT(L), 'k', lw=2, label=r'TT')
+      ax.loglog(L, f * self.flensedEE(L), 'b', lw=2, label=r'EE')
+      ax.loglog(L, f * self.flensedTE(L), 'r', lw=2, label=r'TE')
+      ax.loglog(L, -f * self.flensedTE(L), 'r--', lw=2)
+      ax.loglog(L, f * self.flensedBB(L), 'g', lw=2, label=r'BB')
+      #
+      ax.loglog(L, f * self.ftotalTT(L), 'k', lw=1)
+      ax.loglog(L, f * self.ftotalEE(L), 'b', lw=1)
+      ax.loglog(L, f * self.ftotalTE(L), 'r', lw=1)
+      ax.loglog(L, -f * self.ftotalTE(L), 'r--', lw=1)
+      ax.loglog(L, f * self.ftotalBB(L), 'g', lw=1)
+      #
+      ax.grid()
+      ax.legend(loc=1, fontsize='x-small', labelspacing=0.1)
+      #ax.set_xlim((1.e2, 1.e4))
+      ax.set_ylim((1.e-6, 1.e5))
+      ax.set_xlabel(r'$\ell$')
+      ax.set_ylabel(r'$\ell(\ell+1)\; C_\ell \; /(2\pi)$ [$(\mu K_\text{CMB})^2$]')
+
+      plt.show()
+
+
+   def plotClTT(self):
+      '''Show various components in TT power spectrum, debeamed.
+      '''
+      Nl = 1001
+      L = np.logspace(np.log10(1.), np.log10(3.6e4), Nl, 10.)
+
+
       
-      super(PlanckSMICACMB, self).__init__()
+      fig=plt.figure(0, figsize=(12, 8))
+      ax=plt.subplot(111)
+      #
+      f = 1. / self.fdl_to_cl(L)
+      #
+      ax.loglog(L, f * self.flensedTT(L), 'r', lw=2, label=r'CMB')
+      ax.loglog(L, f * self.fCIB(L), 'b', lw=2, label=r'CIB')
+      ax.loglog(L, f * self.fCIBPoisson(L), 'b--', lw=1, label=r'CIB poisson')
+      ax.loglog(L, f * self.fCIBClustered(L), 'b--', lw=1, label=r'CIB clustered')
+      ax.loglog(L, f * self.ftSZ(L), 'g', lw=2, label=r'tSZ')
+      ax.loglog(L, f * self.fkSZ(L), 'g--', lw=2, label=r'kSZ')
+      ax.loglog(L, -f * self.ftSZ_CIB(L), 'm', lw=2, label=r'$|$ tSZ x CIB $|$')
+      ax.loglog(L, f * self.fradioPoisson(L), 'y', lw=2, label=r'radio Poisson')
+      ax.loglog(L, f * self.fgalacticDust(L), 'r', lw=2, label=r'galactic dust')
+      ax.loglog(L, f * self.fdetectorNoise(L), 'k--', lw=2, label=r'detector noise')
+      ax.loglog(L, f * self.ftotalTT(L), 'k', lw=2, label=r'total')
+      #
+      ax.grid()
+      ax.legend(loc=2, fontsize='x-small', labelspacing=0.1)
+      ax.set_xlim((100., 2.4e4))
+      ax.set_ylim((1.e-4, 1.e6))
+      ax.set_xlabel(r'$\ell$')
+      ax.set_ylabel(r'$\ell(\ell+1)\; C_\ell \; /(2\pi)$ [$(\mu K_\text{CMB})^2$]')
+
+      plt.show()
 
 
 ###############################################################################
 ###############################################################################
+# Examples
+'''
+# ACT 148GHz
+act148cmb = CMB(beam=1.4, noise=12., nu1=148.e9, nu2=148.e9, lMin=1., lMaxT=1.e4, lMaxP=1.e4, atm=False, name="act148")
+
+# Planck SMICA map
+planckSmicaCmb = CMB(beam=5., noise=60., nu1=143.e9, nu2=143.e9, lMin=1., lMaxT=1.e4, lMaxP=1.e4, atm=False, name="plancksmica")
+
 # ACTPol
+actpolCmb = CMB(beam=1.4, noise=18., nu1=143.e9, nu2=143.e9, lMin=1., lMaxT=1.e4, lMaxP=1.e4, atm=False, name="actpol")
 
-class ACTPolCMB(CMB):
-   
-   def __init__(self):
-      # name
-      self.name = "actpol"
-      # frequencies in Hz (irrelevant)
-      self.nu1 = 143.e9
-      self.nu2 = 143.e9
-      # beam fwhm in radians (1.4 arcmin)
-      self.fwhm = 1.4 * (np.pi/180.) / 60.
-      # detector sensitivity in muK*rad.
-      # 18 muK*arcmin
-      self.sensitivity = 18.*(np.pi/180.)/60.
-      
-      super(ACTPolCMB, self).__init__()
-
-
-###############################################################################
-###############################################################################
 # AdvACT
+advactCmb = CMB(beam=1.4, noise=10., nu1=143.e9, nu2=143.e9, lMin=1., lMaxT=1.e4, lMaxP=1.e4, atm=False, name="actpol")
 
-class AdvACTCMB(CMB):
-   
-   def __init__(self):
-      # name
-      self.name = "advact"
-      # frequencies in Hz (irrelevant)
-      self.nu1 = 143.e9
-      self.nu2 = 143.e9
-      # beam fwhm in radians (1.4 arcmin)
-      self.fwhm = 1.4 * (np.pi/180.) / 60.
-      # detector sensitivity in muK*rad.
-      # 10 muK*arcmin
-      self.sensitivity = 10.*(np.pi/180.)/60.
-      
-      super(AdvACTCMB, self).__init__()
+# CMB S4
+cmbs4 = CMB(beam=1., noise=1., nu1=143.e9, nu2=143.e9, lMin=1., lMaxT=1.e4, lMaxP=1.e4, atm=False, name="cmbs4")
 
+# the "reference CMB experiment" from Hu Okamoto 2002
+huokamoto02 = CMB(beam=4., noise=1., nu1=143.e9, nu2=143.e9, lMin=1., lMaxT=1.e4, lMaxP=1.e4, atm=False, name="cmbs4")
 
-###############################################################################
-###############################################################################
-# CMB Stage IV
-
-class StageIVCMB(CMB):
-   
-   def __init__(self, beam=1., noise=1., lMin=30., lMaxT=3.e3, lMaxP=5.e3, atm=False, name=None):
-      # name
-      #      self.name = "cmbs4"
-      self.name = "cmbs4_beam"+str(round(beam, 3))+"_noise"+str(round(noise, 3))+"_lmin"+str(int(lMin))+"_lmaxT"+str(int(lMaxT))+"_lmaxP"+str(int(lMaxP))
-      if atm:
-         self.name += "_atmnoise"
-      if name is not None:
-         self.name += "_"+name
-
-      # frequencies in Hz (irrelevant)
-      self.nu1 = 143.e9
-      self.nu2 = 143.e9
-      # beam fwhm in radians (1 arcmin)
-      self.fwhm = beam * (np.pi/180.)/60.
-      # detector sensitivity in muK*rad.
-      # 1 muK*arcmin
-      self.sensitivity = noise * (np.pi/180.)/60.
-      # ell limits
-      self.lMin = lMin
-      self.lMaxT = lMaxT
-      self.lMaxP = lMaxP
-      
-      super(StageIVCMB, self).__init__()
-      
-      # add atmospheric noise if needed
-      if atm:
-         self.ftotalTT = lambda l: self.flensedTT(l) + self.fdetectorNoise(l) + self.fatmosphericNoiseTT(l)
-         self.ftotalEE = lambda l: self.flensedEE(l) + 2.*self.fdetectorNoise(l) + self.fatmosphericNoisePP(l)
-         self.ftotalBB = lambda l: self.flensedBB(l) + 2.*self.fdetectorNoise(l) + self.fatmosphericNoisePP(l)
-         self.ftotalTE = lambda l: self.flensedTE(l)
-
-###############################################################################
-###############################################################################
-# the "reference CMB experiment" from Hu & Okamoto
-# noise is 1muK.arcmin, beam fwhm=4arcmin
-
-class HuOkamoto2002(CMB):
-   
-   def __init__(self):
-      # name
-      self.name = "huokamoto02"
-      # frequencies in Hz (irrelevant)
-      self.nu1 = 143.e9
-      self.nu2 = 143.e9
-      # beam fwhm in radians (4 arcmin)
-      self.fwhm = 4 * (np.pi/180.) / 60.
-      # detector sensitivity in muK*rad.
-      # 1 muK*arcmin
-      self.sensitivity = 1.*(np.pi/180.)/60.
-      
-      super(HuOkamoto2002, self).__init__()
-
+# Simons Observatory
+cmb = CMB(beam=1.4, noise=7., nu1=143.e9, nu2=143.e9, lMin=1., lMaxT=3.e3, lMaxP=5.e3, fg=True, atm=False, name="so")
+'''
 
 ###############################################################################
 ###############################################################################
@@ -1162,10 +1014,10 @@ class CIBWuDore17(CMB):
       data = np.genfromtxt(path)
       
       # interpolate the 1h, 2h and shot noise
-      self.flnCIB_1hln = interp1d(np.log(data[:,0]), np.log(data[:,1]), kind='linear', bounds_error=False, fill_value='extrapolate')
+      self.flnCIB_1hln = interp1d(np.log(data[:,0]), np.log(data[:,1]), kind='linear', bounds_error=False, fill_value=0.)
       self.fCIB_1h = lambda l: np.exp(self.flnCIB_1hln(np.log(l)))
       #
-      self.flnCIB_2hln = interp1d(np.log(data[:,0]), np.log(data[:,2]), kind='linear', bounds_error=False, fill_value='extrapolate')
+      self.flnCIB_2hln = interp1d(np.log(data[:,0]), np.log(data[:,2]), kind='linear', bounds_error=False, fill_value=0.)
       self.fCIB_2h = lambda l: np.exp(self.flnCIB_2hln(np.log(l)))
       #
       if (nu1==nu2):
@@ -1179,10 +1031,10 @@ class CIBWuDore17(CMB):
    def plot(self):
       # check the interpolation
       L = np.logspace(np.log10(1.), np.log10(1.e5), 1001, 10.)
-      Cl_1h = np.array(map(self.fCIB_1h, L))
-      Cl_2h = np.array(map(self.fCIB_2h, L))
-      Cl_shot = np.array(map(self.fCIB_shot, L))
-      Cl = np.array(map(self.fCIB, L))
+      Cl_1h = np.array(list(map(self.fCIB_1h, L)))
+      Cl_2h = np.array(list(map(self.fCIB_2h, L)))
+      Cl_shot = np.array(list(map(self.fCIB_shot, L)))
+      Cl = np.array(list(map(self.fCIB, L)))
       
       # superimpose the data points to check
       nu1, nu2 = np.sort([self.nu1, self.nu2])
@@ -1210,12 +1062,6 @@ class CIBWuDore17(CMB):
       fig.savefig("/Users/Emmanuel/Desktop/cib_power_wudore17.pdf", bbox_inches='tight')
 
       plt.show()
-
-
-
-
-
-
 
 
 
