@@ -1,0 +1,10 @@
+# Mac OS generated files
+.DS_Store
+.DS_Store?
+
+# files to exclude
+*.swp
+*.pyc
+
+# directories to exclude
+__pycache__/
